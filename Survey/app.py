@@ -1,14 +1,11 @@
-from flask import jsonify, Blueprint
 import json
 from flask import render_template, request, make_response
-from models import app, Survey, Observation, DB_url
+from models import Survey, Observation, DB_url, app
 from sqlalchemy import create_engine
-from statistics import mode, mean, median
-
-bp = Blueprint('greetings', __name__)
-engine = create_engine(DB_url, connect_args={'check_same_thread': False}, echo = True)
-
 from sqlalchemy.orm import sessionmaker
+from statistics import mode, median, StatisticsError
+
+engine = create_engine(DB_url, connect_args={'check_same_thread': False}, echo=True)
 Session = sessionmaker(bind=engine)
 session = Session()
 
@@ -17,7 +14,7 @@ session = Session()
 def survey():
     survey_data = session.query(Survey).all()
     observation_data = session.query(Observation).all()
-    return render_template('index.html', survey=survey_data, observation=observation_data)
+    return make_response(render_template('index.html', survey=survey_data, observation=observation_data))
 
 
 @app.route("/survey/", methods=["POST"])
@@ -27,8 +24,8 @@ def addsurvey():
         session.add(Survey(name = name))
         output = "Record Added"
     session.commit()
-    return make_response(output,
-                         200)
+    return make_response(output)
+
 
 @app.route("/survey/<id>/", methods=["DELETE"])
 def removesurvey(id):
@@ -36,16 +33,23 @@ def removesurvey(id):
         session.query(Survey).filter(Survey.id == id).delete()
         output = "Record Deleted"
     session.commit()
-    return make_response(output,
-                         200)
+    return make_response(output)
 
 
 @app.route("/stat/<stat_id>/", methods=["GET","PUT", "POST", "DELETE"])
 def stat(stat_id):
     if request.method == "GET":
         records = session.query(Observation).filter(Observation.survey_id == stat_id)
-        output = jsonify(list(records))
-        return make_response(output, 200)
+        result = []
+        for record in records:
+            data = {
+                "id": record.id,
+                "survey_id": record.survey_id,
+                "value": record.value,
+                "frequency": record.frequency
+            }
+            result.append(data)
+        return make_response(json.dumps(result))
     if request.method == 'PUT' or request.method == "POST":
         value = request.get_json().get('value')
         frequency = request.get_json().get('frequency')
@@ -57,47 +61,45 @@ def stat(stat_id):
             session.add(Observation(value=value, id=stat_id, frequency=frequency))
             output = "Record Added for %s" % stat_id
             session.commit()
-            return make_response(output,
-                                 200)
+        return make_response(output)
     elif request.method == 'DELETE':
         session.query(Observation).filter(Observation.id == stat_id).delete()
         output = "Record Deleted for Observation: %s" % stat_id
         session.commit()
-        return make_response(output,
-                             200)
-
-
+        return make_response(output)
 
 
 @app.route('/results', methods=['GET'])
 def results():
-    id = request.args.get('id', None)
+    id = request.args.get('id')
     survey = session.query(Survey).filter(Survey.id == id).first()
-    records = session.query(Observation).filter(Observation.survey_id == id)
-
-    if records.count() > 0:
-        lst = [record.frequency for record in records]
-        mean_lst = [record.value * record.frequency for record in records]
-
-        master_median_lst = []
-        for record in records:
-            median_lst = [record.value]
-            count_lst = median_lst * record.frequency
-            master_median_lst = master_median_lst + count_lst
-
-        count = sum(lst) # sum of all frequencies of a survey id
-        median_val = median(master_median_lst)
-        mode_val = mode(master_median_lst)
-        mean_val = sum(mean_lst)/ count
-
-        return render_template('results.html',survey=survey.name, count=count, mean=mean_val, mode=mode_val,
-                               median=median_val)
+    if survey:
+        records = session.query(Observation).filter(Observation.survey_id == id)
+        if records.count() > 0:
+            lst = [record.frequency for record in records]
+            mean_lst = [record.value * record.frequency for record in records]
+            master_median_lst = []
+            for record in records:
+                median_lst = [record.value]
+                count_lst = median_lst * record.frequency
+                master_median_lst = master_median_lst + count_lst
+            count = sum(lst)  # sum of all frequencies of a survey id
+            mean_val = sum(mean_lst) / count
+            try:
+                median_val = median(master_median_lst)
+                mode_val = mode(master_median_lst)
+            except StatisticsError:
+                mode_val = "No unique Mode."
+            return make_response(render_template('results.html',survey=survey.name, count=count, mean=mean_val, mode=mode_val,
+                                   median=median_val))
+        else:
+            return make_response(render_template('results.html', survey="No Observations for this survey", count='NA', mean='NA', mode='NA',
+                                median='NA'))
     else:
-        return render_template('results.html', survey=survey.name, count='NA', mean='NA', mode='NA',
-                               median='NA')
+        return make_response(render_template('results.html', survey="No survey available", count='NA', mean='NA', mode='NA',
+                               median='NA'))
 
 
 if __name__ == "__main__":
-    print(app.root_path)
     app.run(debug=True)
 
